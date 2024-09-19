@@ -1,10 +1,21 @@
+#Anaconda Prompt安裝 pip install opencv-python
+#Anaconda Prompt安裝 pip install opencv-python-headless
+#Anaconda Prompt安裝 pip install numpy
+#Anaconda Prompt安裝 pip install mediapipe
+#提取影片中 20% 的圖片：根據 total_frames 計算要提取的圖片數量，並確定提取間隔 interval，確保只保存 20% 的圖片。
+#間隔計算：為避免 interval 為 0，在計算時加入 max(1, total_frames // num_images)，確保最小間隔為 1。
+#保存關鍵點數據和角度：在 CSV 文件中保存每個關鍵點的 (x, y, z) 坐標，以及計算的角度和動作標籤（"push_up" 或 "other"）
+#手臂角度計算：計算「肩膀 - 肘部 - 手腕」的角度，以檢測伏地挺身這樣的動作。
+#角度範圍擴展：將原來的手臂角度範圍90到160度擴展10%，變為81到176度，讓判斷更加包容動作不標準的情況。
+#輸出檔案：只有當 action_label == "spush_up" 時，才將數據寫入 CSV 檔案
+#檢測條件：可以調整 min_detection_confidence 提高或降低姿態偵測的嚴格程度。
+
 import cv2
 import mediapipe as mp
 import numpy as np
 import csv
 import os
 import time
-import math
 
 # 初始化 MediaPipe 的工具
 mp_drawing = mp.solutions.drawing_utils
@@ -33,7 +44,7 @@ if not cap.isOpened():
     exit()
 
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # 獲取影片總幀數
-num_images = 100  # 要提取的圖片數量
+num_images = int(total_frames * 0.2)  # 提取影片中 20% 的圖片數量
 interval = max(1, total_frames // num_images)  # 計算提取間隔，確保間隔至少為1
 
 # 計算關鍵點的夾角（用於伏地挺身偵測）
@@ -69,8 +80,9 @@ with mp_pose.Pose(
     # 初始化 CSV 文件，保存關鍵點數據
     with open(output_csv_path, mode='w', newline='') as file:
         writer = csv.writer(file)
-        # CSV 標頭：每個關鍵點的 x, y, z 坐標，並加上動作標籤
-        writer.writerow([f"x_{i}" for i in range(33)] + [f"y_{i}" for i in range(33)] + [f"z_{i}" for i in range(33)] + ['label'])
+        # CSV 標頭：每個關鍵點的 x, y, z 坐標，並加上角度和動作標籤
+        headers = [f"x_{i}" for i in range(33)] + [f"y_{i}" for i in range(33)] + [f"z_{i}" for i in range(33)] + ['arm_angle', 'label']
+        writer.writerow(headers)
 
         frame_count = 0  # 用於追蹤目前的幀數
         image_count = 0  # 用於追蹤儲存的圖片數量
@@ -94,26 +106,29 @@ with mp_pose.Pose(
                 for landmark in landmarks:
                     pose_data.extend([landmark.x, landmark.y, landmark.z])
 
-                # 偵測伏地挺身動作，這裡使用肩膀、臀部和膝蓋形成的角度作為判斷依據
+                # 計算肩膀、肘部、手腕的角度（用於上斜伏地挺身檢測）
                 shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x,
                             landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y]
-                hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x,
-                       landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y]
-                knee = [landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].x,
-                        landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].y]
+                elbow = [landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].x,
+                         landmarks[mp_pose.PoseLandmark.LEFT_ELBOW.value].y]
+                wrist = [landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].x,
+                         landmarks[mp_pose.PoseLandmark.LEFT_WRIST.value].y]
 
-                angle = calculate_angle(shoulder, hip, knee)
-                print(f"Detected angle: {angle}")
+                # 計算手臂的角度
+                arm_angle = calculate_angle(shoulder, elbow, wrist)
+                print(f"Detected arm angle: {arm_angle}")
 
-                # 判斷角度以確定是否為伏地挺身動作，這裡假設角度在一定範圍內才算是伏地挺身
-                if 70 < angle < 160:
+                # 判斷角度以確定是否為伏地挺身動作（擴展範圍10%）
+                # 原範圍 90 < arm_angle < 160 -> 擴展後範圍 81 < arm_angle < 176
+                if 81 < arm_angle < 176:
                     action_label = "push_up"
                 else:
                     action_label = "other"
 
-                # 保存數據到 CSV
-                writer.writerow(pose_data + [action_label])
-                print(f"Frame {frame_count}: Pose data saved to CSV with label '{action_label}'.")
+                # 保存數據到 CSV，包括關鍵點和角度，且只有動作標記為 "push_up" 才保存數據到 CSV
+                if action_label == "push_up":
+                    writer.writerow(pose_data + [arm_angle, action_label])
+                    print(f"Frame {frame_count}: Pose data saved to CSV with label '{action_label}'.")
 
                 # 保存圖片並增加圖片計數
                 image_count += 1
